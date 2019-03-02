@@ -1,0 +1,242 @@
+﻿#pragma kernel DeinterleaveDepthTexture
+#pragma kernel EvaluateObscuranceX
+#pragma kernel EvaluateObscuranceY
+#pragma kernel Assemble
+#pragma kernel BlurX
+#pragma kernel BlurY
+#include "ImageSpaceOperations.cginc"
+
+Texture2D<float> _DepthTexture;
+Texture2D<float4> _NormalTexture;
+RWTexture2DArray<float> _DeinterleavedDepthTextures;
+RWTexture2DArray<float> _RawObscuranceResultNear;
+RWTexture2D<float> _AssembledRawObscuranceResult;
+RWTexture2D<float> _BlurXResult;
+RWTexture2D<float> _FinalObscuranceResult;
+
+#define MAX_SAMPLE_PER_AXIS 8
+#define DIRECTION_COUNT 4
+int _ActiveTextureInx;
+float4x4 _InvProjMatrix;
+float4x4 _ViewMatrix;
+float4 _IDToUV;
+float4 _IDToUVFull;
+float4 _NearFieldSampleVectors[4 * DIRECTION_COUNT];
+int _SampleVectorStartingInxOffset;
+float _TanHalfFoV;
+float _AspectRatio;
+float _Sigma;
+float _Beta;
+float _Epsilon;
+float _WorldSpaceRoI;
+int _RangeCutoffNearfield;
+float _FilterRadiusCutoff;
+float4 _VectorizedRotationMatrix;
+
+#define SKY_BOX_Z_THRESHOLD -200.0f
+
+static const float filterWeights[5] =
+{
+    0.382928, 0.241732, 0.060598, 0.005977, 0.000229
+};
+
+// Spilt the full-res z-buffer into 4 half-res z-buffer (a 4-slice texture volume)
+[numthreads(16, 12, 1)]
+void DeinterleaveDepthTexture(uint3 id : SV_DispatchThreadID)
+{
+    
+    const uint targetTextureInx = id.x % 2u + id.y % 2u * 2u;
+    const uint2 targetTextureCoords = uint2(id.x / 2u, id.y / 2u);
+
+
+    const float fragDepth = _DepthTexture[id.xy];
+    
+    _DeinterleavedDepthTextures[uint3(targetTextureCoords, targetTextureInx)] = _DepthTexture[id.xy];
+    
+}
+
+// Compute AO, x-axis pass. 4 dispatches, one for each half-res z-buffer
+[numthreads(16, 12, 1)]
+void EvaluateObscuranceX(uint3 id : SV_DispatchThreadID)
+{
+    
+    const float fragDepth = _DeinterleavedDepthTextures[uint3(id.xy, _ActiveTextureInx)];
+    const float2 fragUV = _IDToUV.xy * (id.xy + float2(0.5f, 0.5f));
+    const float3 fragPos = findViewSpacePositionFromDepthTextureVolume(_DeinterleavedDepthTextures, uint3(id.xy, _ActiveTextureInx), fragUV, _InvProjMatrix);
+    const float3 fragNorm = findViewSpaceNormal(_NormalTexture, uint2(2u * id.x + _ActiveTextureInx % 2u, 2u * id.y + _ActiveTextureInx / 2u), _ViewMatrix);
+
+
+    const float baseUVRadiusY = min(_WorldSpaceRoI * _TanHalfFoV / (2.0f * (-fragPos.z)), 0.2f);
+    const float trueWorldRadius = baseUVRadiusY * 2.0f * -fragPos.z / _TanHalfFoV;                      // Clamp the UV radius for close-up pixels
+    const float2 trueUVRadius = float2(baseUVRadiusY / _AspectRatio, baseUVRadiusY);
+    const float trueSqaureRadius = trueWorldRadius * trueWorldRadius;
+
+    const float4 vectorizedRotationMatrix = _VectorizedRotationMatrix * 2 - 1;
+    const float2x2 passRotationMatrix = float2x2(vectorizedRotationMatrix[0], vectorizedRotationMatrix[1],
+        vectorizedRotationMatrix[2], vectorizedRotationMatrix[3]);
+
+    float obscurance = 0.0f;
+    const float sampleCoords[MAX_SAMPLE_PER_AXIS] =
+    {
+        _NearFieldSampleVectors[_SampleVectorStartingInxOffset].x,
+        _NearFieldSampleVectors[_SampleVectorStartingInxOffset].y,
+        _NearFieldSampleVectors[_SampleVectorStartingInxOffset].z,
+        _NearFieldSampleVectors[_SampleVectorStartingInxOffset].w,
+        -_NearFieldSampleVectors[1 + _SampleVectorStartingInxOffset].x,
+        -_NearFieldSampleVectors[1 + _SampleVectorStartingInxOffset].y,
+        -_NearFieldSampleVectors[1 + _SampleVectorStartingInxOffset].z,
+        -_NearFieldSampleVectors[1 + _SampleVectorStartingInxOffset].w
+    };
+    [unroll]
+    for (uint inx = 0; inx < MAX_SAMPLE_PER_AXIS; ++inx)
+    {
+        const float2 sampleUV = fragUV + mul(passRotationMatrix, float2(sampleCoords[inx], 0) * trueUVRadius);
+        const uint3 sampleID = uint3(sampleUV / _IDToUV.xy, _ActiveTextureInx);
+        const float samplegDepth = _DeinterleavedDepthTextures[sampleID];
+        const float3 samplePos = findViewSpacePositionFromDepthTextureVolume(_DeinterleavedDepthTextures, sampleID, sampleUV, _InvProjMatrix);
+
+        const float3 queryRay = samplePos - fragPos;
+        const float queryRaySqaureLength = dot(queryRay, queryRay);
+        obscurance += (_RangeCutoffNearfield && (queryRaySqaureLength > trueSqaureRadius) ? 0 : 1) *
+		                    max(0, dot(queryRay, fragNorm * trueWorldRadius) + fragPos.z * _Beta) / (queryRaySqaureLength + _Epsilon);
+
+    }
+
+    _RawObscuranceResultNear[uint3(id.xy, _ActiveTextureInx)] = max(0.0f, 1.0f - _Sigma * obscurance / MAX_SAMPLE_PER_AXIS) / 2; // We avg the result from X-pass and Y-pass. So we divide it by 2 here
+}
+
+// Compute AO, y-axis pass. 4 dispatches, one for each half-res z-buffer
+[numthreads(16, 12, 1)]
+void EvaluateObscuranceY(uint3 id : SV_DispatchThreadID)
+{
+    
+    const float fragDepth = _DeinterleavedDepthTextures[uint3(id.xy, _ActiveTextureInx)];
+    const float2 fragUV = _IDToUV.xy * (id.xy + float2(0.5f, 0.5f));
+    const float3 fragPos = findViewSpacePositionFromDepthTextureVolume(_DeinterleavedDepthTextures, uint3(id.xy, _ActiveTextureInx), fragUV, _InvProjMatrix);
+    const float3 fragNorm = findViewSpaceNormal(_NormalTexture, uint2(2u * id.x + _ActiveTextureInx % 2u, 2u * id.y + _ActiveTextureInx / 2u), _ViewMatrix);
+
+
+    const float baseUVRadiusY = min(_WorldSpaceRoI * _TanHalfFoV / (2.0f * (-fragPos.z)), 0.2f);
+    const float trueWorldRadius = baseUVRadiusY * 2.0f * -fragPos.z / _TanHalfFoV;
+    const float2 trueUVRadius = float2(baseUVRadiusY / _AspectRatio, baseUVRadiusY);
+    const float trueSqaureRadius = trueWorldRadius * trueWorldRadius;
+
+    const float4 vectorizedRotationMatrix = _VectorizedRotationMatrix * 2 - 1;
+    const float2x2 passRotationMatrix = float2x2(vectorizedRotationMatrix[0], vectorizedRotationMatrix[1],
+        vectorizedRotationMatrix[2], vectorizedRotationMatrix[3]);
+
+    float obscurance = 0.0f;
+    const float sampleCoords[MAX_SAMPLE_PER_AXIS] =
+    {
+        _NearFieldSampleVectors[_SampleVectorStartingInxOffset].x,
+        _NearFieldSampleVectors[_SampleVectorStartingInxOffset].y,
+        _NearFieldSampleVectors[_SampleVectorStartingInxOffset].z,
+        _NearFieldSampleVectors[_SampleVectorStartingInxOffset].w,
+        -_NearFieldSampleVectors[1 + _SampleVectorStartingInxOffset].x,
+        -_NearFieldSampleVectors[1 + _SampleVectorStartingInxOffset].y,
+        -_NearFieldSampleVectors[1 + _SampleVectorStartingInxOffset].z,
+        -_NearFieldSampleVectors[1 + _SampleVectorStartingInxOffset].w
+    };
+    [unroll]
+    for (uint inx = 0; inx < MAX_SAMPLE_PER_AXIS; ++inx)
+    {
+        const float2 sampleUV = fragUV + mul(passRotationMatrix, float2(0, sampleCoords[inx]) * trueUVRadius);
+        const uint3 sampleID = uint3(sampleUV / _IDToUV.xy, _ActiveTextureInx);
+        const float samplegDepth = _DeinterleavedDepthTextures[sampleID];
+        const float3 samplePos = findViewSpacePositionFromDepthTextureVolume(_DeinterleavedDepthTextures, sampleID, sampleUV, _InvProjMatrix);
+
+        const float3 queryRay = samplePos - fragPos;
+        const float queryRaySqaureLength = dot(queryRay, queryRay);
+        obscurance += (_RangeCutoffNearfield && (queryRaySqaureLength > trueSqaureRadius) ? 0 : 1) *
+		                    max(0, dot(queryRay, fragNorm * trueWorldRadius) + fragPos.z * _Beta) / (queryRaySqaureLength + _Epsilon);
+
+    }
+
+    const float4 illumination = float4(max(0.0f, 1.0f - _Sigma * obscurance / MAX_SAMPLE_PER_AXIS) / 2, 0,0,0);
+
+    _RawObscuranceResultNear[uint3(id.xy, _ActiveTextureInx)] += illumination;
+
+}
+
+[numthreads(16, 12, 1)]
+void Assemble(uint3 id : SV_DispatchThreadID)
+{
+    const uint targetTextureInx = id.x % 2u + id.y % 2u * 2u;
+    const uint2 targetTextureCoords = uint2(id.x / 2u, id.y / 2u);
+
+    const float nearfield = _RawObscuranceResultNear[uint3(targetTextureCoords, targetTextureInx)];
+    
+    _AssembledRawObscuranceResult[id.xy] = nearfield;
+}
+
+[numthreads(16, 12, 1)]
+void BlurX(uint3 id : SV_DispatchThreadID)
+{
+    const float fragPrevResult = _AssembledRawObscuranceResult[id.xy];
+    const float fragDepth = _DepthTexture[id.xy];
+    const float2 fragUV = _IDToUVFull.xy * (id.xy + float2(0.5f, 0.5f));
+    const float3 fragNDC = findNDC(fragDepth, fragUV);
+    const float3 fragPos = findViewSpacePositionFromNDC(fragNDC, _InvProjMatrix);
+
+    float result = 0.0f;
+
+    result += fragPrevResult.x * filterWeights[0];
+
+	[unroll]
+    for (int x = -4; x <= 4; ++x)
+    {
+        if (x == 0)
+            continue;
+        else
+        {
+            const float4 samplePrevResult = _AssembledRawObscuranceResult[id.xy + uint2((x), 0)];
+            const uint2 sampleID = id.xy + uint2(x, 0);
+            const float2 sampleUV = _IDToUVFull.xy * (sampleID.xy + float2(0.5f, 0.5f));
+            const float sampleDepth = _DepthTexture[sampleID];
+            const float3 sampleNDC = findNDC(sampleDepth, sampleUV);
+            const float3 samplePos = findViewSpacePositionFromNDC(sampleNDC, _InvProjMatrix);
+
+            const float queryRayLength = clamp(abs(length(samplePos - fragPos)), 0.0f, _FilterRadiusCutoff);
+            result += samplePrevResult.x * filterWeights[abs(x)];
+        }
+    }
+    
+    _BlurXResult[id.xy] = result;
+}
+
+[numthreads(16, 12, 1)]
+void BlurY(uint3 id : SV_DispatchThreadID)
+{
+    const float fragPrevResult = _BlurXResult[id.xy];
+    const float fragDepth = _DepthTexture[id.xy];
+    const float2 fragUV = _IDToUVFull.xy * (id.xy + float2(0.5f, 0.5f));
+    const float3 fragNDC = findNDC(fragDepth, fragUV);
+    const float3 fragPos = findViewSpacePositionFromNDC(fragNDC, _InvProjMatrix);
+
+    float result = 0.0f;
+
+    result += fragPrevResult.x * filterWeights[0];
+
+	[unroll]
+    for (int x = -4; x <= 4; ++x)
+    {
+        if (x == 0)
+            continue;
+        else
+        {
+            const float4 samplePrevResult = _BlurXResult[id.xy + uint2(0, (x))];
+            const uint2 sampleID = id.xy + uint2(0, x);
+            const float2 sampleUV = _IDToUVFull.xy * (sampleID.xy + float2(0.5f, 0.5f));
+            const float sampleDepth = _DepthTexture[sampleID];
+            const float3 sampleNDC = findNDC(sampleDepth, sampleUV);
+            const float3 samplePos = findViewSpacePositionFromNDC(sampleNDC, _InvProjMatrix);
+
+            const float queryRayLength = clamp(abs(length(samplePos - fragPos)), 0.0f, _FilterRadiusCutoff);
+            result += samplePrevResult.x * filterWeights[abs(x)];
+        }
+    }
+    
+    _FinalObscuranceResult[id.xy] = result;
+
+}
+
