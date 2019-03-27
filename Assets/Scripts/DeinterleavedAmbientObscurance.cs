@@ -10,7 +10,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
     Camera mainCamera;
     CommandBuffer commandBuffer;
     RenderTexture debugTexture;
-    public ComputeShader shader;
+    private ComputeShader shader;
     int deinterleavingKernel;
     int evaluationKernelXNear;
     int evaluationKernelYNear;
@@ -47,6 +47,8 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
 
     void OnEnable()
     {
+        shader = (ComputeShader)UnityEditor.AssetDatabase.LoadAssetAtPath("Assets/Shaders/DeinterleavedAmbientObscurance.compute", typeof(ComputeShader));
+
         mainCamera = GetComponent<Camera>();
         mainCamera.depthTextureMode = DepthTextureMode.Depth;
 
