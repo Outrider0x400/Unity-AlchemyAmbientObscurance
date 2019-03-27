@@ -6,7 +6,7 @@ This is a lightweight script & shader that implements the Alchemy Ambient Obscur
 
 Deferred shading path & HDR is required. 
 
-Simply attach the script to the main camera of the scene, and attach the compute shader to the script. (I'll update it so this will be done automatically)
+Simply attach the script to the main camera of the scene.
 
 On my 940MX, the rendering of these two images took less than 8ms, at 1080p.
 
