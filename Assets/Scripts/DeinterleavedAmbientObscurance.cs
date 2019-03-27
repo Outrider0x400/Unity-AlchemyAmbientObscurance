@@ -9,8 +9,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
     
     Camera mainCamera;
     CommandBuffer commandBuffer;
-    RenderTexture debugTexture;
-    private ComputeShader shader;
+    ComputeShader shader;
     int deinterleavingKernel;
     int evaluationKernelXNear;
     int evaluationKernelYNear;
@@ -19,24 +18,28 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
 
     [Range(0.5f, 2.0f)]
     [Tooltip("World-space sample radius")]
-    public float worldspaceRadius;
+    public float worldspaceRadius = 0.5f;
     [Range(0.0f, 0.1f)]
     [Tooltip("Notice that depth bias is increased for ranged fragments.")]
-    public float baselineDepthBias;
+    public float baselineDepthBias = 0.001f;
     [Range(0.5f, 2.0f)]
-    public float intensityModifier;
-    [Range(0.01f, 10.0f)]
-    [Tooltip("Samples that is further away than this value do not contribute.")]
-    public float filterCutoffRadius;
+    public float intensityModifier = 1.0f;
     [Tooltip("If enabled, distant samples are ignored, resulting white halos at depth discontinuities.\nIf disabled, black halos appear instead.")]
-    public bool rangeCutoff;
+    public bool rangeCutoff = true;
+
+    // Zero division guard
     readonly float epsilon = 0.001f;
     
+    // rotation matrices for each half-res depth texture.
     Vector4 rotationMatrix0;
-    Vector4 rotationMatrix90; 
-    Vector4 rotationMatrix180; 
-    Vector4 rotationMatrix270;
+    Vector4 rotationMatrix1; 
+    Vector4 rotationMatrix2; 
+    Vector4 rotationMatrix3;
 
+    // Sample offset vectors
+    Vector4[] nearFieldSampleVectors;
+
+    // Helper function. Convert a Vector4 to be fitted into a ARGB32 format, whose values are between [0, 1]
     static void NormalizeVector4(ref Vector4 i)
     {
         i.x = (i.x + 1) / 2;
@@ -45,7 +48,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         i.w = (i.w + 1) / 2;
     }
 
-    void OnEnable()
+    void Awake()
     {
         shader = (ComputeShader)UnityEditor.AssetDatabase.LoadAssetAtPath("Assets/Shaders/DeinterleavedAmbientObscurance.compute", typeof(ComputeShader));
 
@@ -74,40 +77,35 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         blurXKernel = shader.FindKernel("BlurX");
         blurYKernel = shader.FindKernel("BlurY");
 
-
-        debugTexture = new RenderTexture(mainCamera.pixelWidth, mainCamera.pixelHeight, 24, RenderTextureFormat.ARGB32)
-        {
-            enableRandomWrite = true,
-        };
-        debugTexture.Create();
-
-
         rotationMatrix0 = new Vector4(
             Mathf.Cos(Mathf.Deg2Rad * 0.0f * 90.0f),
             -Mathf.Sin(Mathf.Deg2Rad * 0.0f * 90.0f),
             Mathf.Sin(Mathf.Deg2Rad * 0.0f * 90.0f),
             Mathf.Cos(Mathf.Deg2Rad * 0.0f * 90.0f));
         NormalizeVector4(ref rotationMatrix0);
-        rotationMatrix90 = new Vector4(
+        rotationMatrix1 = new Vector4(
             Mathf.Cos(Mathf.Deg2Rad * 0.25f * 90.0f),
             -Mathf.Sin(Mathf.Deg2Rad * 0.25f * 90.0f),
             Mathf.Sin(Mathf.Deg2Rad * 0.25f * 90.0f),
             Mathf.Cos(Mathf.Deg2Rad * 0.25f * 90.0f));
-        NormalizeVector4(ref rotationMatrix90);
-        rotationMatrix180 = new Vector4(
+        NormalizeVector4(ref rotationMatrix1);
+        rotationMatrix2 = new Vector4(
             Mathf.Cos(Mathf.Deg2Rad * 0.5f * 90.0f),
             -Mathf.Sin(Mathf.Deg2Rad * 0.5f * 90.0f),
             Mathf.Sin(Mathf.Deg2Rad * 0.5f * 90.0f),
             Mathf.Cos(Mathf.Deg2Rad * 0.5f * 90.0f));
-        NormalizeVector4(ref rotationMatrix180);
-        rotationMatrix270 = new Vector4(
+        NormalizeVector4(ref rotationMatrix2);
+        rotationMatrix3 = new Vector4(
             Mathf.Cos(Mathf.Deg2Rad * 0.75f * 90.0f),
             -Mathf.Sin(Mathf.Deg2Rad * 0.75f * 90.0f),
             Mathf.Sin(Mathf.Deg2Rad * 0.75f * 90.0f),
             Mathf.Cos(Mathf.Deg2Rad * 0.75f * 90.0f));
-        NormalizeVector4(ref rotationMatrix270);
+        NormalizeVector4(ref rotationMatrix3);
 
-        var nearFieldSampleVectors = new Vector4[16];
+        // 16 spp, with 8 along each axis.
+        // Each axis reads 8 values from 2 Vector4, [a0, a1, a2, a3] [b0, b1, b2, b3]
+        // Eg for x-pass, the sample offset vectors would be [x+a0,y], [x+a1,y], ... , [x+b2,y], [x+b3,y]
+        nearFieldSampleVectors = new Vector4[16];
         for (int inx = 0; inx < 16; ++inx)
         {
             nearFieldSampleVectors[inx] = new Vector4(
@@ -116,7 +114,11 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
                 Mathf.Clamp01(0.75f + Random.Range(-0.125f, 0.125f)),
                 Mathf.Clamp01(1.0f + Random.Range(-0.125f, 0.0f)));
         }
+    }
 
+    void OnEnable()
+    {
+        
         shader.SetVectorArray("_NearFieldSampleVectors", nearFieldSampleVectors);
         shader.SetVector("_IDToUV", new Vector4(1.0f / (mainCamera.pixelWidth / 2), 1.0f / (mainCamera.pixelHeight / 2), 0, 0));
         shader.SetVector("_IDToUVFull", new Vector4(1.0f / (mainCamera.pixelWidth ), 1.0f / (mainCamera.pixelHeight ), 0, 0));
@@ -162,21 +164,21 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
 
         commandBuffer.SetComputeIntParam(shader, "_ActiveTextureInx", 1);
-        commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix90);
+        commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix1);
         commandBuffer.SetComputeIntParam(shader, "_SampleVectorStartingInxOffset", 4);
         commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
         commandBuffer.SetComputeIntParam(shader, "_SampleVectorStartingInxOffset", 6);
         commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
 
         commandBuffer.SetComputeIntParam(shader, "_ActiveTextureInx", 2);
-        commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix180);
+        commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix2);
         commandBuffer.SetComputeIntParam(shader, "_SampleVectorStartingInxOffset", 8);
         commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
         commandBuffer.SetComputeIntParam(shader, "_SampleVectorStartingInxOffset", 10);
         commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
 
         commandBuffer.SetComputeIntParam(shader, "_ActiveTextureInx", 3);
-        commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix270);
+        commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix3);
         commandBuffer.SetComputeIntParam(shader, "_SampleVectorStartingInxOffset", 12);
         commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
         commandBuffer.SetComputeIntParam(shader, "_SampleVectorStartingInxOffset", 14);
@@ -233,7 +235,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         shader.SetFloat("_Sigma", intensityModifier);
         shader.SetFloat("_Beta", baselineDepthBias); 
         shader.SetFloat("_WorldSpaceRoI", worldspaceRadius); 
-        shader.SetFloat("_FilterRadiusCutoff", filterCutoffRadius);
+        shader.SetFloat("_FilterRadiusCutoff", worldspaceRadius);
         shader.SetFloat("_Epsilon", epsilon); 
     }
 
