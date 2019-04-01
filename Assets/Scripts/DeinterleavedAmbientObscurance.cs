@@ -67,7 +67,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
 
         if (shader == null)
         {
-            Debug.LogError("Shader not set. Please drag and drop the correct shader and reactive the script.");
+            Debug.LogError("Shader not found. The expected path of the shader is Assets/Shaders/DeinterleavedAmbientObscurance.compute. Move the shader over there, or change ths path in this script.");
         }
 
         deinterleavingKernel = shader.FindKernel("DeinterleaveDepthTexture");
