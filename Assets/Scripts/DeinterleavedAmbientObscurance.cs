@@ -26,9 +26,6 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
     public float intensityModifier = 1.0f;
     [Tooltip("If enabled, distant samples are ignored, resulting white halos at depth discontinuities.\nIf disabled, black halos appear instead.")]
     public bool rangeCutoff = true;
-
-    // Zero division guard
-    readonly float epsilon = 0.001f;
     
     // rotation matrices for each half-res depth texture.
     Vector4 rotationMatrix0;
