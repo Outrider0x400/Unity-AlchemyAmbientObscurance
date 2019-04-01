@@ -1,20 +1,20 @@
+# This .gitignore file should be placed at the root of your Unity project directory
 
-# Created by https://www.gitignore.io/api/unity
-# Edit at https://www.gitignore.io/?templates=unity
-
-### Unity ###
-[Ll]ibrary/
-[Tt]emp/
-[Oo]bj/
-[Bb]uild/
-[Bb]uilds/
-[Ll]ogs/
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
 
 # Never ignore Asset meta data
-![Aa]ssets/**/*.meta
+!/[Aa]ssets/**/*.meta
 
 # Uncomment this line if you wish to ignore the asset store tools plugin
-# [Aa]ssets/AssetStoreTools*
+/[Aa]ssets/AssetStoreTools*
+
+# TextMesh Pro files
+[Aa]ssets/TextMesh*Pro/
 
 # Visual Studio cache directory
 .vs/
@@ -55,13 +55,3 @@ sysinfo.txt
 # Crashlytics generated file
 crashlytics-build.properties
 
-Packages/
-ProjectSettings/
-Assets/*
-!Assets/Shaders/
-Assets/Shaders/*.meta
-!Assets/Scripts/
-Assets/Scripts/*.meta
-
-
-# End of https://www.gitignore.io/api/unity
