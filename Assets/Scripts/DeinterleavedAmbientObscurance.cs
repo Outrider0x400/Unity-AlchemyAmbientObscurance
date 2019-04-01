@@ -253,7 +253,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
     private void OnPreRender()
     {
         shader.SetMatrix("_ViewMatrix", mainCamera.worldToCameraMatrix);
-        shader.SetInt("_RangeCutoffNearfield", rangeCutoff ? 1 : 0);
+        shader.SetInt("_CuttOffDistantSamples", rangeCutoff ? 1 : 0);
         shader.SetFloat("_Sigma", intensityModifier);
         shader.SetFloat("_Beta", baselineDepthBias); 
         shader.SetFloat("_WorldSpaceRoI", worldspaceRadius); 
