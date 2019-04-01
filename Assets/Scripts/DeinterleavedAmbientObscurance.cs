@@ -8,13 +8,14 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
 {
     
     Camera mainCamera;
-    CommandBuffer commandBuffer;
+    CommandBuffer commandBuffer, debugCommandBuffer;
     ComputeShader shader;
     int deinterleavingKernel;
     int evaluationKernelXNear;
     int evaluationKernelYNear;
     int assembleKernel;
     int blurXKernel, blurYKernel;
+    RenderTexture debugTexture;
 
     [Range(0.5f, 2.0f)]
     [Tooltip("World-space sample radius")]
@@ -26,6 +27,8 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
     public float intensityModifier = 1.0f;
     [Tooltip("If enabled, distant samples are ignored, resulting white halos at depth discontinuities.\nIf disabled, black halos appear instead.")]
     public bool rangeCutoff = true;
+    [Tooltip("Activate to show AO only. Reactive the script to apply the change.")]
+    public bool showAOOnly = false;
     
     // rotation matrices for each half-res depth texture.
     Vector4 rotationMatrix0;
@@ -129,6 +132,14 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         int rawResultVol = Shader.PropertyToID("_RawResultVol");
         int assembledUnfilteredResult = Shader.PropertyToID("_RawResult");
 
+        if (showAOOnly)
+        {
+            debugTexture = new RenderTexture(mainCamera.pixelWidth, mainCamera.pixelHeight,
+                16, RenderTextureFormat.R8, RenderTextureReadWrite.Default);
+            debugTexture.enableRandomWrite = true;
+            debugTexture.Create();
+        }
+
         commandBuffer = new CommandBuffer();
         commandBuffer.name = "DeinterleavedAmbientObscuranceCommandBuffer";
 
@@ -206,16 +217,27 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         commandBuffer.DispatchCompute(shader, blurYKernel, mainCamera.pixelWidth / 16, mainCamera.pixelHeight / 12, 1);
         commandBuffer.ReleaseTemporaryRT(xBlur);
         
+        if (showAOOnly)
+        {
+            commandBuffer.Blit(yBlur, debugTexture);
 
-        commandBuffer.SetGlobalTexture("_FilteredObscuranceTex", yBlur);
-        RenderTargetIdentifier[] compositeRenderTargets = {
-            BuiltinRenderTextureType.GBuffer0,    
-            BuiltinRenderTextureType.CameraTarget 
-        };
-        commandBuffer.SetRenderTarget(compositeRenderTargets, BuiltinRenderTextureType.CameraTarget);
-        commandBuffer.DrawProcedural(Matrix4x4.identity, blitMat, 0, MeshTopology.Triangles, 3);
+            debugCommandBuffer = new CommandBuffer();
+            debugCommandBuffer.name = "DebugBlitCommandBuffer";
+            debugCommandBuffer.Blit(debugTexture, BuiltinRenderTextureType.CameraTarget, blitMat, 1);
+
+            mainCamera.AddCommandBuffer(CameraEvent.AfterEverything, debugCommandBuffer);
+        }
+        else
+        {
+            commandBuffer.SetGlobalTexture("_FilteredObscuranceTex", yBlur);
+            RenderTargetIdentifier[] compositeRenderTargets = {
+                BuiltinRenderTextureType.GBuffer0,
+                BuiltinRenderTextureType.CameraTarget
+            };
+            commandBuffer.SetRenderTarget(compositeRenderTargets, BuiltinRenderTextureType.CameraTarget);
+            commandBuffer.DrawProcedural(Matrix4x4.identity, blitMat, 0, MeshTopology.Triangles, 3);
+        }
         commandBuffer.ReleaseTemporaryRT(yBlur);
-
 
         mainCamera.AddCommandBuffer(CameraEvent.BeforeLighting, commandBuffer);
     }
@@ -223,6 +245,9 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
     void OnDisable()
     {
         mainCamera.RemoveCommandBuffer(CameraEvent.BeforeLighting, commandBuffer);
+        if (showAOOnly)
+            mainCamera.RemoveCommandBuffer(CameraEvent.AfterEverything, debugCommandBuffer);
+
     }
 
     private void OnPreRender()
