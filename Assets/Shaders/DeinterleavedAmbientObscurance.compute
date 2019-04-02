@@ -58,7 +58,7 @@ void EvaluateObscuranceX(uint3 id : SV_DispatchThreadID)
     const float3 fragNorm = findViewNormal(_NormalTex, uint2(2u * id.x + _VolSliceInx % 2u, 2u * id.y + _VolSliceInx / 2u), _ViewMatrix);
 
     const float baseUVRadiusY = min(_WorldSpaceRoI / (_TanHalfFoV * 2.0f * (-fragPos.z)), 0.2f);
-    const float trueWorldRadius = baseUVRadiusY * 2.0f * -fragPos.z / _TanHalfFoV;                      // Clamp the UV radius for close-up pixels
+    const float trueWorldRadius = baseUVRadiusY * 2.0f * -fragPos.z * _TanHalfFoV;                      // Clamp the UV radius for close-up pixels
     const float2 trueUVRadius = float2(baseUVRadiusY / _AspectRatio, baseUVRadiusY);
     const float trueSqaureRadius = trueWorldRadius * trueWorldRadius;
 
@@ -92,7 +92,7 @@ void EvaluateObscuranceX(uint3 id : SV_DispatchThreadID)
         const float3 queryRay = samplePos - fragPos;
         const float queryRaySqaureLength = dot(queryRay, queryRay);
         obscurance += (_CuttOffDistantSamples && (queryRaySqaureLength > trueSqaureRadius) ? 0 :
-            max(0, dot(queryRay, fragNorm * trueWorldRadius) + fragPos.z * _Beta) / (queryRaySqaureLength + EPSILON));
+            max(0, dot(queryRay, fragNorm) + fragPos.z * _Beta) / (queryRaySqaureLength + EPSILON));
 
     }
 
@@ -110,7 +110,7 @@ void EvaluateObscuranceY(uint3 id : SV_DispatchThreadID)
     const float3 fragNorm = findViewNormal(_NormalTex, uint2(2u * id.x + _VolSliceInx % 2u, 2u * id.y + _VolSliceInx / 2u), _ViewMatrix);
 
     const float baseUVRadiusY = min(_WorldSpaceRoI / (_TanHalfFoV * 2.0f * (-fragPos.z)), 0.2f);
-    const float trueWorldRadius = baseUVRadiusY * 2.0f * -fragPos.z / _TanHalfFoV;
+    const float trueWorldRadius = baseUVRadiusY * 2.0f * -fragPos.z * _TanHalfFoV;
     const float2 trueUVRadius = float2(baseUVRadiusY / _AspectRatio, baseUVRadiusY);
     const float trueSqaureRadius = trueWorldRadius * trueWorldRadius;
 
@@ -140,7 +140,7 @@ void EvaluateObscuranceY(uint3 id : SV_DispatchThreadID)
         const float3 queryRay = samplePos - fragPos;
         const float queryRaySqaureLength = dot(queryRay, queryRay);
         obscurance += (_CuttOffDistantSamples && (queryRaySqaureLength > trueSqaureRadius) ? 0 :
-            max(0, dot(queryRay, fragNorm * trueWorldRadius) + fragPos.z * _Beta) / (queryRaySqaureLength + EPSILON));
+            max(0, dot(queryRay, fragNorm) + fragPos.z * _Beta) / (queryRaySqaureLength + EPSILON));
 
     }
 
