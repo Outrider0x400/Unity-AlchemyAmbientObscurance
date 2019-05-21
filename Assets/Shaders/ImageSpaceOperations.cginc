@@ -1,6 +1,15 @@
 #ifndef ISAO_HELPER_INCLUDED
 #define ISAO_HELPER_INCLUDED
 
+inline float3 findViewPos(float zBufferValue, float2 uv, float4x4 invProjMat)
+{
+	const float z = 1.0f - 2 * zBufferValue;
+	const float x = uv.x * 2 - 1;
+	const float y = uv.y * 2 - 1;
+	float4 viewPos = mul(invProjMat, float4(x, y, z, 1.0f));
+	return viewPos.xyz / viewPos.w;
+}
+
 inline float3 findViewPos(RWTexture2DArray<float> zbufferVol, uint3 id, float2 uv, float4x4 invProjMat)
 {
     const float z = 1.0f - 2 * zbufferVol[id].r;

@@ -9,9 +9,9 @@
 Texture2D<float> _DepthTex;
 Texture2D<float4> _NormalTex;
 RWTexture2DArray<float> _DepthTexVol;       // Four slices of half-res depth tex
-RWTexture2DArray<float> _RawResultVol;      // Four slices of half-res result (unfiltered)
-RWTexture2D<float> _RawResult;              // Assembled, unfiltered full-res result
-RWTexture2D<float> _XFilteredResult;        // Full-res, x-pass filter
+RWTexture2DArray<float2> _RawResultVol;      // Four slices of half-res result (unfiltered)
+RWTexture2D<float2> _RawResult;              // Assembled, unfiltered full-res result
+RWTexture2D<float2> _XFilteredResult;        // Full-res, x-pass filter
 RWTexture2D<float> _YFilteredResult;        // Final result
 
 #define MAX_SAMPLE_PER_AXIS 8
@@ -31,6 +31,7 @@ float _Beta;                                // Base depth bias
 float _WorldSpaceRoI;                       // Base world-space radius of interest
 int _CuttOffDistantSamples;
 float4 _VectorizedRotationMatrix;
+float _BilateralFilterRadius;
 
 static const float filterWeights[5] =
 {
@@ -54,7 +55,8 @@ void DeinterleaveDepthTexture(uint3 id : SV_DispatchThreadID)
 void EvaluateObscuranceX(uint3 id : SV_DispatchThreadID)
 {
     const float2 fragUV = _IDToUVHalfRes.xy * (id.xy + float2(0.5f, 0.5f));
-    const float3 fragPos = findViewPos(_DepthTexVol, uint3(id.xy, _VolSliceInx), fragUV, _InvProjMatrix);
+	const float fragZBufferValue = _DepthTexVol[uint3(id.xy, _VolSliceInx)].r;
+    const float3 fragPos = findViewPos(fragZBufferValue, fragUV, _InvProjMatrix);
     const float3 fragNorm = findViewNormal(_NormalTex, uint2(2u * id.x + _VolSliceInx % 2u, 2u * id.y + _VolSliceInx / 2u), _ViewMatrix);
 
     const float baseUVRadiusY = min(_WorldSpaceRoI / (_TanHalfFoV * 2.0f * (-fragPos.z)), 0.2f);
@@ -97,16 +99,19 @@ void EvaluateObscuranceX(uint3 id : SV_DispatchThreadID)
     }
 
      // We avg the result from X-pass and Y-pass. So we divide it by 2 here
-    _RawResultVol[uint3(id.xy, _VolSliceInx)] = max(0.0f, 1.0f - _Sigma * obscurance / MAX_SAMPLE_PER_AXIS) / 2;
+    _RawResultVol[uint3(id.xy, _VolSliceInx)] = float2(max(0.0f, 1.0f - _Sigma * obscurance / MAX_SAMPLE_PER_AXIS) / 2, fragZBufferValue);
 }
 
 // Compute AO, y-axis pass. 4 dispatches, one for each half-res z-buffer
 [numthreads(16, 12, 1)]
 void EvaluateObscuranceY(uint3 id : SV_DispatchThreadID)
 {
+
+	const float2 xResult = _RawResultVol[uint3(id.xy, _VolSliceInx)];
     
     const float2 fragUV = _IDToUVHalfRes.xy * (id.xy + float2(0.5f, 0.5f));
-    const float3 fragPos = findViewPos(_DepthTexVol, uint3(id.xy, _VolSliceInx), fragUV, _InvProjMatrix);
+	const float fragZBufferValue = xResult.g;
+	const float3 fragPos = findViewPos(fragZBufferValue, fragUV, _InvProjMatrix);
     const float3 fragNorm = findViewNormal(_NormalTex, uint2(2u * id.x + _VolSliceInx % 2u, 2u * id.y + _VolSliceInx / 2u), _ViewMatrix);
 
     const float baseUVRadiusY = min(_WorldSpaceRoI / (_TanHalfFoV * 2.0f * (-fragPos.z)), 0.2f);
@@ -144,7 +149,7 @@ void EvaluateObscuranceY(uint3 id : SV_DispatchThreadID)
 
     }
 
-    _RawResultVol[uint3(id.xy, _VolSliceInx)] += max(0.0f, 1.0f - _Sigma * obscurance / MAX_SAMPLE_PER_AXIS) / 2;
+    _RawResultVol[uint3(id.xy, _VolSliceInx)] += float2(max(0.0f, 1.0f - _Sigma * obscurance / MAX_SAMPLE_PER_AXIS) / 2, 0);
 
 }
 
@@ -154,18 +159,19 @@ void Assemble(uint3 id : SV_DispatchThreadID)
     const uint targetTextureInx = id.x % 2u + id.y % 2u * 2u;
     const uint2 targetTextureCoords = uint2(id.x / 2u, id.y / 2u);
     
-    _RawResult[id.xy] = _RawResultVol[uint3(targetTextureCoords, targetTextureInx)];;
+    _RawResult[id.xy] = _RawResultVol[uint3(targetTextureCoords, targetTextureInx)];
 }
 
 [numthreads(16, 12, 1)]
 void BlurX(uint3 id : SV_DispatchThreadID)
 {
-    // Useful if bilateral filtering is desired
-    //const float fragPrevResult = _RawResult[id.xy];
-    //const float2 fragUV = _IDToUVFullRes.xy * (id.xy + float2(0.5f, 0.5f));
-    //const float3 fragPos = findViewPos(_DepthTex, id.xy, fragUV, _InvProjMatrix);
 
-    float result = _RawResult[id.xy].x * filterWeights[0];
+	const float2 aoAndDepth = _RawResult[id.xy];
+	const float2 fragUV = _IDToUVFullRes.xy * (id.xy + float2(0.5f, 0.5f));
+	const float3 fragPos = findViewPos(aoAndDepth.g, fragUV, _InvProjMatrix);
+
+    float result = aoAndDepth.x * filterWeights[0];
+	float accWeight = filterWeights[0];
 
 	[unroll]
     for (int x = -4; x <= 4; ++x)
@@ -175,21 +181,30 @@ void BlurX(uint3 id : SV_DispatchThreadID)
         else
         {
             const uint2 sampleID = id.xy + uint2(x, 0);
-            // Useful if bilateral filtering is desired
-            //const float2 sampleUV = _IDToUVFullRes.xy * (sampleID.xy + float2(0.5f, 0.5f));
-            //const float3 samplePos = findViewPos(_DepthTex, sampleID, sampleUV, _InvProjMatrix);
-            //const float queryRayLength = clamp(abs(length(samplePos - fragPos)), 0.0f, _FilterRadiusCutoff);
-            result += _RawResult[sampleID].x * filterWeights[abs(x)];
+			const float2 sampleUV = _IDToUVFullRes.xy * (sampleID.xy + float2(0.5f, 0.5f));
+			const float2 sampleAoAndDepth = _RawResult[sampleID];
+
+			const float3 samplePos = findViewPos(sampleAoAndDepth.g, sampleUV, _InvProjMatrix);
+			const float queryRayLength = clamp(abs(length(samplePos - fragPos)), 0.0f, _BilateralFilterRadius);
+			const float disWeight = lerp(1.0f, 0.0f, queryRayLength / _BilateralFilterRadius);
+
+            result += sampleAoAndDepth.r * filterWeights[abs(x)] * disWeight;
+			accWeight += filterWeights[abs(x)] * disWeight;
         }
     }
     
-    _XFilteredResult[id.xy] = result;
+    _XFilteredResult[id.xy] = float2(result / accWeight, aoAndDepth.y);
 }
 
 [numthreads(16, 12, 1)]
 void BlurY(uint3 id : SV_DispatchThreadID)
 {
-    float result = _XFilteredResult[id.xy].x * filterWeights[0];
+	const float2 xResult = _XFilteredResult[id.xy];
+    float result = xResult.x * filterWeights[0];
+	float accWeight = filterWeights[0];
+
+	const float2 fragUV = _IDToUVFullRes.xy * (id.xy + float2(0.5f, 0.5f));
+	const float3 fragPos = findViewPos(xResult.g, fragUV, _InvProjMatrix);
 
 	[unroll]
     for (int x = -4; x <= 4; ++x)
@@ -198,12 +213,20 @@ void BlurY(uint3 id : SV_DispatchThreadID)
             continue;
         else
         {
-            const uint2 sampleID = id.xy + uint2(0, x);
-            result += _XFilteredResult[sampleID].x * filterWeights[abs(x)];
+			const uint2 sampleID = id.xy + uint2(0, x);
+			const float2 sampleUV = _IDToUVFullRes.xy * (sampleID.xy + float2(0.5f, 0.5f));
+			const float2 sampleAoAndDepth = _XFilteredResult[sampleID];
+
+			const float3 samplePos = findViewPos(sampleAoAndDepth.g, sampleUV, _InvProjMatrix);
+			const float queryRayLength = clamp(abs(length(samplePos - fragPos)), 0.0f, _BilateralFilterRadius);
+			const float disWeight = lerp(1.0f, 0.0f, queryRayLength / _BilateralFilterRadius);
+
+			result += sampleAoAndDepth.r * filterWeights[abs(x)] * disWeight;
+			accWeight += filterWeights[abs(x)] * disWeight;
         }
     }
     
-    _YFilteredResult[id.xy] = result;
+    _YFilteredResult[id.xy] = result / accWeight;
 
 }
 
