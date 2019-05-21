@@ -1,7 +1,7 @@
 Alchemy Ambient Obscurance for Unity 3D
 ------------
-![screenshot](sponza_raw.png)
-![screenshot](sibenik_raw.png)
+![screenshot](sponza.png)
+![screenshot](sibenik.png)
 This is a lightweight script & shader that implements the Alchemy Ambient Obscurance for Unity 3D, with some added techniques from HBAO+ and Separable AO.
 
 Deferred shading path & HDR is required. 
