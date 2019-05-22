@@ -8,10 +8,10 @@
 
 Texture2D<float> _DepthTex;
 Texture2D<float4> _NormalTex;
-RWTexture2DArray<float> _DepthTexVol;       // Four slices of half-res depth tex
-RWTexture2DArray<float2> _RawResultVol;      // Four slices of half-res result (unfiltered)
-RWTexture2D<float2> _RawResult;              // Assembled, unfiltered full-res result
-RWTexture2D<float2> _XFilteredResult;        // Full-res, x-pass filter
+RWTexture2DArray<float4> _DepthTexVol;       // Four slices of half-res depth tex
+RWTexture2DArray<float> _RawResultVol;      // Four slices of half-res result (unfiltered)
+RWTexture2D<float> _RawResult;              // Assembled, unfiltered full-res result
+RWTexture2D<float> _XFilteredResult;        // Full-res, x-pass filter
 RWTexture2D<float> _YFilteredResult;        // Final result
 
 #define MAX_SAMPLE_PER_AXIS 8
@@ -44,9 +44,12 @@ void DeinterleaveDepthTexture(uint3 id : SV_DispatchThreadID)
 {
     
     const uint slice = id.x % 2u + id.y % 2u * 2u;
-    const uint2 uv = uint2(id.x / 2u, id.y / 2u);
+    const uint2 outputId = uint2(id.x / 2u, id.y / 2u);
+	const float depthValue = _DepthTex[id.xy];
+	const float2 fragUV = _IDToUVFullRes.xy * (id.xy + float2(0.5f, 0.5f));
+	const float3 fragPos = findViewPos(depthValue, fragUV, _InvProjMatrix);
     
-    _DepthTexVol[uint3(uv, slice)] = _DepthTex[id.xy];
+	_DepthTexVol[uint3(outputId, slice)] = float4(fragPos, depthValue);
     
 }
 
@@ -55,8 +58,8 @@ void DeinterleaveDepthTexture(uint3 id : SV_DispatchThreadID)
 void EvaluateObscuranceX(uint3 id : SV_DispatchThreadID)
 {
     const float2 fragUV = _IDToUVHalfRes.xy * (id.xy + float2(0.5f, 0.5f));
-	const float fragZBufferValue = _DepthTexVol[uint3(id.xy, _VolSliceInx)].r;
-    const float3 fragPos = findViewPos(fragZBufferValue, fragUV, _InvProjMatrix);
+	const float4 fragBuffer = _DepthTexVol[uint3(id.xy, _VolSliceInx)].xyzw;
+	const float3 fragPos = fragBuffer.xyz;
     const float3 fragNorm = findViewNormal(_NormalTex, uint2(2u * id.x + _VolSliceInx % 2u, 2u * id.y + _VolSliceInx / 2u), _ViewMatrix);
 
     const float baseUVRadiusY = min(_WorldSpaceRoI / (_TanHalfFoV * 2.0f * (-fragPos.z)), 0.2f);
@@ -89,7 +92,7 @@ void EvaluateObscuranceX(uint3 id : SV_DispatchThreadID)
     for (uint inx = 0; inx < MAX_SAMPLE_PER_AXIS; ++inx)
     {
         const float2 sampleUV = fragUV + mul(passRotationMatrix, float2(sampleCoords[inx], 0) * trueUVRadius);
-        const float3 samplePos =  findViewPos(_DepthTexVol, uint3(sampleUV / _IDToUVHalfRes.xy, _VolSliceInx), sampleUV, _InvProjMatrix);
+		const float3 samplePos = _DepthTexVol[uint3(sampleUV / _IDToUVHalfRes.xy, _VolSliceInx)].xyz;
 
         const float3 queryRay = samplePos - fragPos;
         const float queryRaySqaureLength = dot(queryRay, queryRay);
@@ -99,19 +102,16 @@ void EvaluateObscuranceX(uint3 id : SV_DispatchThreadID)
     }
 
      // We avg the result from X-pass and Y-pass. So we divide it by 2 here
-    _RawResultVol[uint3(id.xy, _VolSliceInx)] = float2(max(0.0f, 1.0f - _Sigma * obscurance / MAX_SAMPLE_PER_AXIS) / 2, fragZBufferValue);
+	_RawResultVol[uint3(id.xy, _VolSliceInx)] = max(0.0f, 1.0f - _Sigma * obscurance / MAX_SAMPLE_PER_AXIS) / 2;
 }
 
 // Compute AO, y-axis pass. 4 dispatches, one for each half-res z-buffer
 [numthreads(16, 12, 1)]
 void EvaluateObscuranceY(uint3 id : SV_DispatchThreadID)
 {
-
-	const float2 xResult = _RawResultVol[uint3(id.xy, _VolSliceInx)];
     
     const float2 fragUV = _IDToUVHalfRes.xy * (id.xy + float2(0.5f, 0.5f));
-	const float fragZBufferValue = xResult.g;
-	const float3 fragPos = findViewPos(fragZBufferValue, fragUV, _InvProjMatrix);
+	const float3 fragPos = _DepthTexVol[uint3(id.xy, _VolSliceInx)].xyz;
     const float3 fragNorm = findViewNormal(_NormalTex, uint2(2u * id.x + _VolSliceInx % 2u, 2u * id.y + _VolSliceInx / 2u), _ViewMatrix);
 
     const float baseUVRadiusY = min(_WorldSpaceRoI / (_TanHalfFoV * 2.0f * (-fragPos.z)), 0.2f);
@@ -140,7 +140,7 @@ void EvaluateObscuranceY(uint3 id : SV_DispatchThreadID)
     for (uint inx = 0; inx < MAX_SAMPLE_PER_AXIS; ++inx)
     {
         const float2 sampleUV = fragUV + mul(passRotationMatrix, float2(0, sampleCoords[inx]) * trueUVRadius);
-        const float3 samplePos = findViewPos(_DepthTexVol, uint3(sampleUV / _IDToUVHalfRes.xy, _VolSliceInx), sampleUV, _InvProjMatrix);
+		const float3 samplePos = _DepthTexVol[uint3(sampleUV / _IDToUVHalfRes.xy, _VolSliceInx)].xyz;
 
         const float3 queryRay = samplePos - fragPos;
         const float queryRaySqaureLength = dot(queryRay, queryRay);
@@ -149,7 +149,7 @@ void EvaluateObscuranceY(uint3 id : SV_DispatchThreadID)
 
     }
 
-    _RawResultVol[uint3(id.xy, _VolSliceInx)] += float2(max(0.0f, 1.0f - _Sigma * obscurance / MAX_SAMPLE_PER_AXIS) / 2, 0);
+	_RawResultVol[uint3(id.xy, _VolSliceInx)] += max(0.0f, 1.0f - _Sigma * obscurance / MAX_SAMPLE_PER_AXIS) / 2;
 
 }
 
@@ -166,11 +166,12 @@ void Assemble(uint3 id : SV_DispatchThreadID)
 void BlurX(uint3 id : SV_DispatchThreadID)
 {
 
-	const float2 aoAndDepth = _RawResult[id.xy];
 	const float2 fragUV = _IDToUVFullRes.xy * (id.xy + float2(0.5f, 0.5f));
-	const float3 fragPos = findViewPos(aoAndDepth.g, fragUV, _InvProjMatrix);
 
-    float result = aoAndDepth.x * filterWeights[0];
+	const float depthValue = _DepthTex[id.xy];
+	const float3 fragPos = findViewPos(depthValue, fragUV, _InvProjMatrix);
+
+    float result = _RawResult[id.xy].x * filterWeights[0];
 	float accWeight = filterWeights[0];
 
 	[unroll]
@@ -182,29 +183,30 @@ void BlurX(uint3 id : SV_DispatchThreadID)
         {
             const uint2 sampleID = id.xy + uint2(x, 0);
 			const float2 sampleUV = _IDToUVFullRes.xy * (sampleID.xy + float2(0.5f, 0.5f));
-			const float2 sampleAoAndDepth = _RawResult[sampleID];
 
-			const float3 samplePos = findViewPos(sampleAoAndDepth.g, sampleUV, _InvProjMatrix);
+			const float sampleDepthValue = _DepthTex[sampleID.xy];
+			const float3 samplePos = findViewPos(sampleDepthValue, sampleUV, _InvProjMatrix);
 			const float queryRayLength = clamp(abs(length(samplePos - fragPos)), 0.0f, _BilateralFilterRadius);
 			const float disWeight = lerp(1.0f, 0.0f, queryRayLength / _BilateralFilterRadius);
 
-            result += sampleAoAndDepth.r * filterWeights[abs(x)] * disWeight;
+            result += _RawResult[sampleID].r * filterWeights[abs(x)] * disWeight;
 			accWeight += filterWeights[abs(x)] * disWeight;
         }
     }
     
-    _XFilteredResult[id.xy] = float2(result / accWeight, aoAndDepth.y);
+	_XFilteredResult[id.xy] = result / accWeight;
 }
 
 [numthreads(16, 12, 1)]
 void BlurY(uint3 id : SV_DispatchThreadID)
 {
-	const float2 xResult = _XFilteredResult[id.xy];
-    float result = xResult.x * filterWeights[0];
+
+    float result = _XFilteredResult[id.xy].x * filterWeights[0];
 	float accWeight = filterWeights[0];
 
 	const float2 fragUV = _IDToUVFullRes.xy * (id.xy + float2(0.5f, 0.5f));
-	const float3 fragPos = findViewPos(xResult.g, fragUV, _InvProjMatrix);
+	const float depthValue = _DepthTex[id.xy];
+	const float3 fragPos = findViewPos(depthValue, fragUV, _InvProjMatrix);
 
 	[unroll]
     for (int x = -4; x <= 4; ++x)
@@ -215,13 +217,13 @@ void BlurY(uint3 id : SV_DispatchThreadID)
         {
 			const uint2 sampleID = id.xy + uint2(0, x);
 			const float2 sampleUV = _IDToUVFullRes.xy * (sampleID.xy + float2(0.5f, 0.5f));
-			const float2 sampleAoAndDepth = _XFilteredResult[sampleID];
 
-			const float3 samplePos = findViewPos(sampleAoAndDepth.g, sampleUV, _InvProjMatrix);
+			const float sampleDepthValue = _DepthTex[sampleID.xy];
+			const float3 samplePos = findViewPos(sampleDepthValue, sampleUV, _InvProjMatrix);
 			const float queryRayLength = clamp(abs(length(samplePos - fragPos)), 0.0f, _BilateralFilterRadius);
 			const float disWeight = lerp(1.0f, 0.0f, queryRayLength / _BilateralFilterRadius);
 
-			result += sampleAoAndDepth.r * filterWeights[abs(x)] * disWeight;
+			result += _XFilteredResult[sampleID].r * filterWeights[abs(x)] * disWeight;
 			accWeight += filterWeights[abs(x)] * disWeight;
         }
     }

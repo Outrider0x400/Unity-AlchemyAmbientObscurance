@@ -143,14 +143,14 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         Material blitMat = new Material(Shader.Find("Hidden/AmbientObscuranceBlit"));
         
         commandBuffer.GetTemporaryRTArray(zBufferVol, mainCamera.pixelWidth / 2, mainCamera.pixelHeight / 2, 4,
-            0, FilterMode.Point, RenderTextureFormat.R16, RenderTextureReadWrite.Default, 1, true);
+            0, FilterMode.Point, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Default, 1, true);
         commandBuffer.SetComputeTextureParam(shader, deinterleavingKernel, "_DepthTex", BuiltinRenderTextureType.ResolvedDepth);
         commandBuffer.SetComputeTextureParam(shader, deinterleavingKernel, "_NormalTex", BuiltinRenderTextureType.GBuffer2);
         commandBuffer.SetComputeTextureParam(shader, deinterleavingKernel, "_DepthTexVol", zBufferVol);
         commandBuffer.DispatchCompute(shader, deinterleavingKernel, mainCamera.pixelWidth / 16, mainCamera.pixelHeight / 12, 1);
 
         commandBuffer.GetTemporaryRTArray(rawResultVol, mainCamera.pixelWidth / 2, mainCamera.pixelHeight / 2, 4,
-            0, FilterMode.Point, RenderTextureFormat.RGHalf, RenderTextureReadWrite.Default, 1, true);
+            0, FilterMode.Point, RenderTextureFormat.RHalf, RenderTextureReadWrite.Default, 1, true);
         
         commandBuffer.SetComputeTextureParam(shader, evaluationKernelXNear, "_DepthTexVol", zBufferVol);
         commandBuffer.SetComputeTextureParam(shader, evaluationKernelXNear, "_RawResultVol", rawResultVol);
@@ -180,7 +180,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 12);
         commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
 
-        commandBuffer.ReleaseTemporaryRT(zBufferVol);
+        
         
         commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 0);
         commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix0);
@@ -202,15 +202,17 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 14);
         commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
 
+        commandBuffer.ReleaseTemporaryRT(zBufferVol);
+
         commandBuffer.GetTemporaryRT(assembledUnfilteredResult, mainCamera.pixelWidth, mainCamera.pixelHeight,
-            0, FilterMode.Point, RenderTextureFormat.RGHalf, RenderTextureReadWrite.Default, 1, true);
+            0, FilterMode.Point, RenderTextureFormat.RHalf, RenderTextureReadWrite.Default, 1, true);
         commandBuffer.SetComputeTextureParam(shader, assembleKernel, "_RawResult", assembledUnfilteredResult);
         commandBuffer.SetComputeTextureParam(shader, assembleKernel, "_RawResultVol", rawResultVol);
         commandBuffer.DispatchCompute(shader, assembleKernel, mainCamera.pixelWidth / 16, mainCamera.pixelHeight / 12, 1);
         commandBuffer.ReleaseTemporaryRT(rawResultVol);
 
         commandBuffer.GetTemporaryRT(xBlur, mainCamera.pixelWidth, mainCamera.pixelHeight,
-            0, FilterMode.Point, RenderTextureFormat.RGHalf, RenderTextureReadWrite.Default, 1, true);
+            0, FilterMode.Point, RenderTextureFormat.RHalf, RenderTextureReadWrite.Default, 1, true);
         commandBuffer.SetComputeTextureParam(shader, blurXKernel, "_RawResult", assembledUnfilteredResult);
         commandBuffer.SetComputeTextureParam(shader, blurXKernel, "_XFilteredResult", xBlur);
         commandBuffer.SetComputeTextureParam(shader, blurXKernel, "_DepthTex", BuiltinRenderTextureType.ResolvedDepth);
@@ -218,7 +220,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         commandBuffer.ReleaseTemporaryRT(assembledUnfilteredResult);
 
         commandBuffer.GetTemporaryRT(yBlur, mainCamera.pixelWidth, mainCamera.pixelHeight,
-            0, FilterMode.Point, RenderTextureFormat.R16, RenderTextureReadWrite.Default, 1, true);
+            0, FilterMode.Point, RenderTextureFormat.RHalf, RenderTextureReadWrite.Default, 1, true);
         commandBuffer.SetComputeTextureParam(shader, blurYKernel, "_YFilteredResult", yBlur);
         commandBuffer.SetComputeTextureParam(shader, blurYKernel, "_XFilteredResult", xBlur);
         commandBuffer.SetComputeTextureParam(shader, blurYKernel, "_DepthTex", BuiltinRenderTextureType.ResolvedDepth);
@@ -227,7 +229,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         
         if (showAOOnly)
         {
-            var debugTexture = RenderTexture.GetTemporary(mainCamera.pixelWidth, mainCamera.pixelHeight, 0, RenderTextureFormat.R16);
+            var debugTexture = RenderTexture.GetTemporary(mainCamera.pixelWidth, mainCamera.pixelHeight, 0, RenderTextureFormat.RHalf);
             debugTexture.enableRandomWrite = true;
             debugTexture.Create();
 
