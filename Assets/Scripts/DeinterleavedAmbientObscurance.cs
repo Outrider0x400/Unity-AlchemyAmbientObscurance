@@ -9,13 +9,18 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
     
     Camera mainCamera;
     CommandBuffer commandBuffer, debugCommandBuffer;
-    ComputeShader shader;
+    public ComputeShader shader;
+    public Shader blitShader;
     int deinterleavingKernel;
     int evaluationKernelXNear;
     int evaluationKernelYNear;
     int assembleKernel;
     int blurXKernel, blurYKernel;
     //RenderTexture debugTexture;
+
+    readonly int THREAD_X = 16;
+    readonly int THREAD_Y = 12;
+
 
     [Range(0.5f, 2.0f)]
     [Tooltip("World-space sample radius")]
@@ -53,7 +58,12 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
 
     void Awake()
     {
-        shader = (ComputeShader)UnityEditor.AssetDatabase.LoadAssetAtPath("Assets/Shaders/DeinterleavedAmbientObscurance.compute", typeof(ComputeShader));
+    }
+
+    void OnEnable()
+    {
+
+        //shader = (ComputeShader)UnityEditor.AssetDatabase.LoadAssetAtPath("Assets/Shaders/DeinterleavedAmbientObscurance.compute", typeof(ComputeShader));
 
         mainCamera = GetComponent<Camera>();
         mainCamera.depthTextureMode = DepthTextureMode.Depth;
@@ -117,11 +127,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
                 Mathf.Clamp01(0.75f + Random.Range(-0.125f, 0.125f)),
                 Mathf.Clamp01(1.0f + Random.Range(-0.125f, 0.0f)));
         }
-    }
 
-    void OnEnable()
-    {
-        
         shader.SetVectorArray("_SampleData", nearFieldSampleVectors);
         shader.SetVector("_IDToUVHalfRes", new Vector4(1.0f / (mainCamera.pixelWidth / 2), 1.0f / (mainCamera.pixelHeight / 2), 0, 0));
         shader.SetVector("_IDToUVFullRes", new Vector4(1.0f / (mainCamera.pixelWidth ), 1.0f / (mainCamera.pixelHeight ), 0, 0));
@@ -129,7 +135,12 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         shader.SetFloat("_AspectRatio", mainCamera.aspect);
         shader.SetFloat("_TanHalfFoV", Mathf.Tan(mainCamera.fieldOfView * Mathf.Deg2Rad));
 
-        int zBufferVol = Shader.PropertyToID("_DepthTexVol");
+        //int zBufferVol = Shader.PropertyToID("_DepthTexVol");
+        int[] halfResPosBuffers = new int[4];
+        halfResPosBuffers[0] = Shader.PropertyToID("_HalfResPosTex_0");
+        halfResPosBuffers[1] = Shader.PropertyToID("_HalfResPosTex_1");
+        halfResPosBuffers[2] = Shader.PropertyToID("_HalfResPosTex_2");
+        halfResPosBuffers[3] = Shader.PropertyToID("_HalfResPosTex_3");
         int xBlur = Shader.PropertyToID("_XFilteredResult");
         int yBlur = Shader.PropertyToID("_YFilteredResult");
         int rawResultVol = Shader.PropertyToID("_RawResultVol");
@@ -140,75 +151,108 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         commandBuffer = new CommandBuffer();
         commandBuffer.name = "DeinterleavedAmbientObscuranceCommandBuffer";
 
-        Material blitMat = new Material(Shader.Find("Hidden/AmbientObscuranceBlit"));
-        
-        commandBuffer.GetTemporaryRTArray(zBufferVol, mainCamera.pixelWidth / 2, mainCamera.pixelHeight / 2, 4,
+        Material blitMat = new Material(blitShader);
+
+        //commandBuffer.GetTemporaryRTArray(zBufferVol, mainCamera.pixelWidth / 2, mainCamera.pixelHeight / 2, 4,
+        //    0, FilterMode.Point, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Default, 1, true);
+        commandBuffer.GetTemporaryRT(halfResPosBuffers[0], mainCamera.pixelWidth / 2, mainCamera.pixelHeight / 2,
+            0, FilterMode.Point, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Default, 1, true);
+        commandBuffer.GetTemporaryRT(halfResPosBuffers[1], mainCamera.pixelWidth / 2, mainCamera.pixelHeight / 2,
+            0, FilterMode.Point, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Default, 1, true);
+        commandBuffer.GetTemporaryRT(halfResPosBuffers[2], mainCamera.pixelWidth / 2, mainCamera.pixelHeight / 2,
+            0, FilterMode.Point, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Default, 1, true);
+        commandBuffer.GetTemporaryRT(halfResPosBuffers[3], mainCamera.pixelWidth / 2, mainCamera.pixelHeight / 2,
             0, FilterMode.Point, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Default, 1, true);
         commandBuffer.SetComputeTextureParam(shader, deinterleavingKernel, "_DepthTex", BuiltinRenderTextureType.ResolvedDepth);
         commandBuffer.SetComputeTextureParam(shader, deinterleavingKernel, "_NormalTex", BuiltinRenderTextureType.GBuffer2);
-        commandBuffer.SetComputeTextureParam(shader, deinterleavingKernel, "_DepthTexVol", zBufferVol);
-        commandBuffer.DispatchCompute(shader, deinterleavingKernel, mainCamera.pixelWidth / 16, mainCamera.pixelHeight / 12, 1);
+        commandBuffer.SetComputeTextureParam(shader, deinterleavingKernel, "_HalfResPosTex_0", halfResPosBuffers[0]);
+        commandBuffer.SetComputeTextureParam(shader, deinterleavingKernel, "_HalfResPosTex_1", halfResPosBuffers[1]);
+        commandBuffer.SetComputeTextureParam(shader, deinterleavingKernel, "_HalfResPosTex_2", halfResPosBuffers[2]);
+        commandBuffer.SetComputeTextureParam(shader, deinterleavingKernel, "_HalfResPosTex_3", halfResPosBuffers[3]);
+        commandBuffer.DispatchCompute(shader, deinterleavingKernel, mainCamera.pixelWidth / (2 * THREAD_X), mainCamera.pixelHeight / (2 * THREAD_Y), 1);
 
         commandBuffer.GetTemporaryRTArray(rawResultVol, mainCamera.pixelWidth / 2, mainCamera.pixelHeight / 2, 4,
             0, FilterMode.Point, RenderTextureFormat.RHalf, RenderTextureReadWrite.Default, 1, true);
         
-        commandBuffer.SetComputeTextureParam(shader, evaluationKernelXNear, "_DepthTexVol", zBufferVol);
+        //commandBuffer.SetComputeTextureParam(shader, evaluationKernelXNear, "_DepthTexVol", zBufferVol);
         commandBuffer.SetComputeTextureParam(shader, evaluationKernelXNear, "_RawResultVol", rawResultVol);
         commandBuffer.SetComputeTextureParam(shader, evaluationKernelXNear, "_NormalTex", BuiltinRenderTextureType.GBuffer2);
         
-        commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_DepthTexVol", zBufferVol);
+        //commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_DepthTexVol", zBufferVol);
         commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_RawResultVol", rawResultVol);
         commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_NormalTex", BuiltinRenderTextureType.GBuffer2);
 
         commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 0);
         commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix0);
         commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 0);
-        commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
+        commandBuffer.SetComputeTextureParam(shader, evaluationKernelXNear, "_HalfResPosTex", halfResPosBuffers[0]);
+        commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
+        commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 2);
+        commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_HalfResPosTex", halfResPosBuffers[0]);
+        commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
+        commandBuffer.ReleaseTemporaryRT(halfResPosBuffers[0]);
 
         commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 1);
         commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix1);
         commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 4);
-        commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
+        commandBuffer.SetComputeTextureParam(shader, evaluationKernelXNear, "_HalfResPosTex", halfResPosBuffers[1]);
+        commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
+        commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 6);
+        commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_HalfResPosTex", halfResPosBuffers[1]);
+        commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
+        commandBuffer.ReleaseTemporaryRT(halfResPosBuffers[1]);
 
         commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 2);
         commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix2);
         commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 8);
-        commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
+        commandBuffer.SetComputeTextureParam(shader, evaluationKernelXNear, "_HalfResPosTex", halfResPosBuffers[2]);
+        commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
+        commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 10);
+        commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_HalfResPosTex", halfResPosBuffers[2]);
+        commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
+        commandBuffer.ReleaseTemporaryRT(halfResPosBuffers[2]);
 
         commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 3);
         commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix3);
         commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 12);
-        commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
-
-        
-        
-        commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 0);
-        commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix0);
-        commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 2);
-        commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
-
-        commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 1);
-        commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix1);
-        commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 6);
-        commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
-
-        commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 2);
-        commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix2);
-        commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 10);
-        commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
-
-        commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 3);
-        commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix3);
+        commandBuffer.SetComputeTextureParam(shader, evaluationKernelXNear, "_HalfResPosTex", halfResPosBuffers[3]);
+        commandBuffer.DispatchCompute(shader, evaluationKernelXNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
         commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 14);
-        commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / 16, (mainCamera.pixelHeight / 2) / 12, 1);
+        commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_HalfResPosTex", halfResPosBuffers[3]);
+        commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
+        commandBuffer.ReleaseTemporaryRT(halfResPosBuffers[3]);
 
-        commandBuffer.ReleaseTemporaryRT(zBufferVol);
+        //commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 0);
+        //commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_HalfResPosTex", halfResPosBuffers[0]);
+        //commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix0);
+        //commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 2);
+        //commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
+
+        //commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 1);
+        //commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_HalfResPosTex", halfResPosBuffers[1]);
+        //commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix1);
+        //commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 6);
+        //commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
+
+        //commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 2);
+        //commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_HalfResPosTex", halfResPosBuffers[2]);
+        //commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix2);
+        //commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 10);
+        //commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
+
+        //commandBuffer.SetComputeIntParam(shader, "_VolSliceInx", 3);
+        //commandBuffer.SetComputeTextureParam(shader, evaluationKernelYNear, "_HalfResPosTex", halfResPosBuffers[3]);
+        //commandBuffer.SetComputeVectorParam(shader, "_VectorizedRotationMatrix", rotationMatrix3);
+        //commandBuffer.SetComputeIntParam(shader, "_SampleDataInxOffset", 14);
+        //commandBuffer.DispatchCompute(shader, evaluationKernelYNear, (mainCamera.pixelWidth / 2) / THREAD_X, (mainCamera.pixelHeight / 2) / THREAD_Y, 1);
+
+        //        commandBuffer.ReleaseTemporaryRT(zBufferVol);
 
         commandBuffer.GetTemporaryRT(assembledUnfilteredResult, mainCamera.pixelWidth, mainCamera.pixelHeight,
             0, FilterMode.Point, RenderTextureFormat.RHalf, RenderTextureReadWrite.Default, 1, true);
         commandBuffer.SetComputeTextureParam(shader, assembleKernel, "_RawResult", assembledUnfilteredResult);
         commandBuffer.SetComputeTextureParam(shader, assembleKernel, "_RawResultVol", rawResultVol);
-        commandBuffer.DispatchCompute(shader, assembleKernel, mainCamera.pixelWidth / 16, mainCamera.pixelHeight / 12, 1);
+        commandBuffer.DispatchCompute(shader, assembleKernel, mainCamera.pixelWidth / THREAD_X, mainCamera.pixelHeight / THREAD_Y, 1);
         commandBuffer.ReleaseTemporaryRT(rawResultVol);
 
         commandBuffer.GetTemporaryRT(xBlur, mainCamera.pixelWidth, mainCamera.pixelHeight,
@@ -216,7 +260,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         commandBuffer.SetComputeTextureParam(shader, blurXKernel, "_RawResult", assembledUnfilteredResult);
         commandBuffer.SetComputeTextureParam(shader, blurXKernel, "_XFilteredResult", xBlur);
         commandBuffer.SetComputeTextureParam(shader, blurXKernel, "_DepthTex", BuiltinRenderTextureType.ResolvedDepth);
-        commandBuffer.DispatchCompute(shader, blurXKernel, mainCamera.pixelWidth / 16, mainCamera.pixelHeight / 12, 1);
+        commandBuffer.DispatchCompute(shader, blurXKernel, mainCamera.pixelWidth / THREAD_X, mainCamera.pixelHeight / THREAD_Y, 1);
         commandBuffer.ReleaseTemporaryRT(assembledUnfilteredResult);
 
         commandBuffer.GetTemporaryRT(yBlur, mainCamera.pixelWidth, mainCamera.pixelHeight,
@@ -224,7 +268,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         commandBuffer.SetComputeTextureParam(shader, blurYKernel, "_YFilteredResult", yBlur);
         commandBuffer.SetComputeTextureParam(shader, blurYKernel, "_XFilteredResult", xBlur);
         commandBuffer.SetComputeTextureParam(shader, blurYKernel, "_DepthTex", BuiltinRenderTextureType.ResolvedDepth);
-        commandBuffer.DispatchCompute(shader, blurYKernel, mainCamera.pixelWidth / 16, mainCamera.pixelHeight / 12, 1);
+        commandBuffer.DispatchCompute(shader, blurYKernel, mainCamera.pixelWidth / THREAD_X, mainCamera.pixelHeight / THREAD_Y, 1);
         commandBuffer.ReleaseTemporaryRT(xBlur);
         
         if (showAOOnly)
@@ -273,7 +317,7 @@ public class DeinterleavedAmbientObscurance : MonoBehaviour
         shader.SetFloat("_Sigma", intensityModifier);
         shader.SetFloat("_Beta", baselineDepthBias); 
         shader.SetFloat("_WorldSpaceRoI", worldspaceRadius);
-        shader.SetFloat("_BilateralFilterRadius", bilateralFilterRadius);
+        shader.SetFloat("_EdgeSharpness", bilateralFilterRadius);
     }
 
 }
